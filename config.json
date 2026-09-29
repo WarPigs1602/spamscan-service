@@ -1,0 +1,12 @@
+[
+{"name":"host","value":"127.0.0.1"},
+{"name":"port","value":"4400"},
+{"name":"password","value":"testpass"},
+{"name":"servername","value":"spamscan.midiandmore.net"},
+{"name":"description","value":"Spam scan relay"},
+{"name":"numeric","value":"SZ"},
+{"name":"identd","value":"spamscan"},
+{"name":"id","value":"777"},
+{"name":"nick","value":"S"},
+{"name":"account","value":"S"}
+]

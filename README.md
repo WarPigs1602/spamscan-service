@@ -39,11 +39,17 @@ java -jar target/spamscan-service-1.0-SNAPSHOT-jar-with-dependencies.jar config.
 java -jar target/spamscan-service-1.0-SNAPSHOT-jar-with-dependencies.jar --debug config.json
 java -jar target/spamscan-service-1.0-SNAPSHOT-jar-with-dependencies.jar --deamon config.json
 java -jar target/spamscan-service-1.0-SNAPSHOT-jar-with-dependencies.jar --deamon --debug config.json
+java -jar target/spamscan-service-1.0-SNAPSHOT-jar-with-dependencies.jar --deamon start config.json
+java -jar target/spamscan-service-1.0-SNAPSHOT-jar-with-dependencies.jar --deamon stop config.json
+java -jar target/spamscan-service-1.0-SNAPSHOT-jar-with-dependencies.jar --start config.json
+java -jar target/spamscan-service-1.0-SNAPSHOT-jar-with-dependencies.jar --stop config.json
 ```
 
 `--debug` prints incoming (`<<`) and outgoing (`>>`) P10 lines. `PASS` and `AUTH` arguments are masked, but other network traffic, including message text and host information, can appear in logs. Keep debug logs private.
 
-`--deamon` starts a separate background Java process and prints its PID. The conventional spelling `--daemon` is also accepted. The child writes console output to `daemon.log`, while connection failures are also appended to `error.log`. The launcher validates that the config can be read, but its PID message does not guarantee that the child subsequently connected successfully; check the logs. This is a background launch, not a service-manager installation or a built-in stop command. The config path and flags can appear in any order; an unknown flag or a second config path is rejected.
+`--start` (or `--deamon start`) starts a separate background Java process and prints its PID. `--stop` (or `--deamon stop`) stops that process, waiting up to ten seconds before forcing termination. Both flags also work with `--deamon` or `--daemon`, for example `--daemon --stop`. The conventional spelling `--daemon` is also accepted; omitting `start` keeps the existing startup behavior. The child writes console output to `daemon.log`, while connection failures are also appended to `error.log`. The launcher validates that the config can be read, but its PID message does not guarantee that the child subsequently connected successfully; check the logs. This is a background launch, not a service-manager installation. The config path, action and flags can appear in any order; an unknown flag, multiple start/stop actions or a second config path is rejected.
+
+Daemon state is saved next to the configuration as `<config filename>.daemon.pid`; a corresponding `.lock` file serializes start/stop operations. Use the same config path to start and stop a daemon with the same Java installation. A second start does not launch another instance for that config. Stop verifies the PID, process start time, config association and Java executable before terminating the process; process arguments are also verified when the OS exposes them. Stop does not require the config file to still exist. Keep the PID file protected from edits by other users. A stale PID file is cleaned up by the next start/stop; the lock file may remain and should not be deleted while a start/stop operation is running. Daemons launched before PID-file support must be stopped manually once.
 
 ## Configuration
 
@@ -67,7 +73,6 @@ File paths below are relative to the process working directory unless absolute p
 | `numeric`, `nick`, `identd`, `account` | `SS`, `S`, `spamscan`, `S` | Service server numeric and user registration fields. The sample numeric differs from the code fallback `SZ`. |
 | `dbhost`, `db` | Empty | PostgreSQL server (optional `:port`) and database name. Both must be nonempty to enable DB access. |
 | `dbuser`, `dbpassword`, `dbssl` | Empty, empty, `false` | PostgreSQL credentials and JDBC SSL setting; only used if DB access is enabled. |
-| `authuser`, `authpassword` | Empty | Optional credentials for the privileged private `AUTH` command; an empty `authuser` disables it. |
 | `badwordsFile`, `glineBadwordsFile` | `badwords-spamscan.json`, `badwords-gline.json` | Ordinary and immediate-G-line word-list files. |
 | `charsFile` | `chars.txt` | UTF-8 homoglyph mapping file; included in this repository. |
 | `dnsbl` | `true` | Submit visible, resolved IPv4 addresses to DroneBL and EFBL checks. Set `false` to disable these checks and automatic DNSBL G-lines. |
@@ -114,13 +119,12 @@ Send a private message to the configured service nick. Commands are available on
 | Command | Access | Behavior |
 | --- | --- | --- |
 | `HELP`, `SHOWCOMMANDS`, `VERSION` | Tracked user | Show available commands or version. `HELP <command>` for administrator syntax requires privilege. |
-| `AUTH <user> <password>` | Privileged account with configured admin credentials | Mark the requesting numeric as authorized for channel commands; authorization is not shared between users and is cleared on quit or reconnect. |
-| `ADDCHAN <#channel>`, `DELCHAN <#channel>` | Privileged account or requester authorized with `AUTH`; DB required | Save and join an existing observed channel, or delete a saved channel and part it. |
+| `ADDCHAN <#channel>`, `DELCHAN <#channel>` | Privileged account; DB required | Save and join an existing observed channel, or delete a saved channel and part it. |
 | `BADWORD ADD <text>`, `BADWORD DELETE <text>`, `BADWORD LIST` | Privileged account | Edit or list ordinary badwords. Editing requires a writable rule-file directory. |
 | `BADWORD GLINEADD <text>`, `BADWORD GLINEDELETE <text>`, `BADWORD GLINELIST` | Privileged account | Edit or list immediate-G-line badwords. |
 | `SCORE <nick>` | Privileged account | Display the current, decayed spam score for a tracked nick. |
 
-Privilege relies on the external `chanserv.users` table; without DB access only the public informational commands are available. Empty administrator credentials do not grant access to `AUTH`.
+Privilege relies on the external `chanserv.users` table; without DB access only the public informational commands are available.
 
 ## Troubleshooting
 

@@ -2,6 +2,7 @@ package net.midiandmore.newserv.spamscan;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.InetAddress;
@@ -9,12 +10,14 @@ import java.net.Socket;
 import java.net.URI;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -30,11 +33,24 @@ final class P10SpamScanRelay {
     private final AtomicBoolean burstComplete = new AtomicBoolean(false);
     private final ConcurrentHashMap<String, NickUser> users = new ConcurrentHashMap<>();
     private final Map<String, ChannelState> channels = new HashMap<>();
-    private final Set<String> authenticated = new HashSet<>();
     private SpamDatabase database;
     private SpamRules rules;
     private ExecutorService blacklistExecutor;
     private volatile PrintWriter writer;
+    private static final String BUILD_DATE;
+    static {
+        String date = "unknown";
+        try (InputStream in = P10SpamScanRelay.class.getClassLoader().getResourceAsStream("build.properties")) {
+            if (in != null) {
+                Properties props = new Properties();
+                props.load(in);
+                date = props.getProperty("build.date", date);
+            }
+        } catch (IOException ex) {
+            LOG.log(Level.WARNING, "Could not load build.properties", ex);
+        }
+        BUILD_DATE = date;
+    }
 
     private static final class ChannelState {
         private final Map<String, Long> joined = new HashMap<>();
@@ -105,7 +121,6 @@ final class P10SpamScanRelay {
                 burstComplete.set(false);
                 users.clear();
                 channels.clear();
-                authenticated.clear();
             }
             Thread.sleep(10_000);
         }
@@ -138,16 +153,6 @@ final class P10SpamScanRelay {
                 if (handlePingPong(line)) {
                     continue;
                 }
-                if (isEndOfBurst(line)) {
-                    burstComplete.set(true);
-                    send("%s EA", numeric());
-                    if (database != null) {
-                        for (String channel : database.channels()) {
-                            joinChannel(channel);
-                        }
-                    }
-                    continue;
-                }
                 handle(line);
             }
         } finally {
@@ -160,7 +165,18 @@ final class P10SpamScanRelay {
         }
     }
 
-    private void handle(String line) {
+    private void handle(String line) throws SQLException {
+        if (isEndOfBurst(line)) {
+            if (burstComplete.compareAndSet(false, true)) {
+                send("%s EA", numeric());
+                if (database != null) {
+                    for (String channel : database.channels()) {
+                        joinChannel(channel);
+                    }
+                }
+            }
+            return;
+        }
         String stripped = stripTags(line.trim());
         String[] tokens = splitIrcLine(stripped);
         if (tokens.length < 2) {
@@ -294,7 +310,6 @@ final class P10SpamScanRelay {
 
     private void removeUser(String numeric) {
         users.remove(numeric);
-        authenticated.remove(numeric);
         for (String channel : Set.copyOf(channels.keySet())) {
             if (channels.get(channel).joined.containsKey(numeric)) {
                 leave(numeric, channel);
@@ -487,11 +502,10 @@ final class P10SpamScanRelay {
                 && (database.flags(user.account) & 0x4) != 0 ? "O" : "P";
         String command = args[0].toUpperCase(Locale.ROOT);
         if ("VERSION".equals(command)) {
-            reply(source, replyType, "SpamScan service 1.0-SNAPSHOT (MidiAndMore.Net)");
+            reply(source, replyType, "SpamScan service 1.0-SNAPSHOT (MidiAndMore.Net) Build: " + BUILD_DATE);
         } else if ("HELP".equals(command) && args.length == 2) {
             String usage = switch (args[1].toUpperCase(Locale.ROOT)) {
                 case "ADDCHAN" -> "ADDCHAN <#channel>";
-                case "AUTH" -> "AUTH <requestname> <requestpassword>";
                 case "BADWORD" -> "BADWORD <ADD|DELETE|LIST|GLINEADD|GLINEDELETE|GLINELIST> [word]";
                 case "DELCHAN" -> "DELCHAN <#channel>";
                 case "SCORE" -> "SCORE <nick>";
@@ -499,19 +513,19 @@ final class P10SpamScanRelay {
             };
             reply(source, replyType, privileged && usage != null ? usage : "Unknown command, or access denied.");
         } else if ("HELP".equals(command) || "SHOWCOMMANDS".equals(command)) {
-            reply(source, replyType, "HELP, SHOWCOMMANDS, VERSION"
-                    + (privileged ? ", AUTH, ADDCHAN, DELCHAN, BADWORD, SCORE" : ""));
-        } else if ("AUTH".equals(command) && privileged) {
-            if (args.length == 3 && !config.get("authuser", "").isBlank()
-                    && config.get("authuser", "").equals(args[1])
-                    && config.get("authpassword", "").equals(args[2])) {
-                authenticated.add(source);
-                reply(source, replyType, "Successfully authed.");
-            } else {
-                reply(source, replyType, "Access denied.");
+            reply(source, replyType, "Public commands:");
+            reply(source, replyType, "HELP [command] - Show available commands or usage for a command.");
+            reply(source, replyType, "SHOWCOMMANDS - List available commands with descriptions.");
+            reply(source, replyType, "VERSION - Show the service version and build date/time (UTC).");
+            if (privileged) {
+                reply(source, replyType, "Privileged commands:");
+                reply(source, replyType, "ADDCHAN <#channel> - Add a channel to spam monitoring.");
+                reply(source, replyType, "DELCHAN <#channel> - Remove a channel from spam monitoring.");
+                reply(source, replyType, "BADWORD <ADD|DELETE|LIST|GLINEADD|GLINEDELETE|GLINELIST> [word] - Manage spam and G-line word lists.");
+                reply(source, replyType, "SCORE <nick> - Show a user's current spam score.");
             }
         } else if (("ADDCHAN".equals(command) || "DELCHAN".equals(command))
-                && args.length == 2 && database != null && (privileged || authenticated.remove(source))) {
+                && args.length == 2 && database != null && privileged) {
             String channel = args[1].toLowerCase(Locale.ROOT);
             if (!channel.startsWith("#") && !channel.startsWith("&")) {
                 reply(source, replyType, "Invalid channel.");
@@ -596,8 +610,17 @@ final class P10SpamScanRelay {
             return;
         }
 
-        String account = tokens.length > 10 && tokens[tokens.length - 4].contains(":")
-                ? tokens[tokens.length - 4].split(":", 2)[0] : "";
+        String account = null;
+        if (tokens[7].contains("h") && tokens[7].contains("z") && tokens[7].contains("r")) {
+            account = tokens.length > 10 && tokens[tokens.length - 6].contains(":")
+                    ? tokens[tokens.length - 6].split(":", 2)[0] : "";
+        } else if ((tokens[7].contains("h") && tokens[7].contains("r")) || (tokens[7].contains("z") && tokens[7].contains("r"))) {
+            account = tokens.length > 10 && tokens[tokens.length - 5].contains(":")
+                    ? tokens[tokens.length - 5].split(":", 2)[0] : "";
+        } else if (tokens[7].contains("r")) {
+            account = tokens.length > 10 && tokens[tokens.length - 4].contains(":")
+                    ? tokens[tokens.length - 4].split(":", 2)[0] : "";
+        }
         String ip = "";
         if (!tokens[7].contains("k")) {
             try {

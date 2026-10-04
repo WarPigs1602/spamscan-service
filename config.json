@@ -13,8 +13,6 @@
 {"name":"dbuser","value":""},
 {"name":"dbpassword","value":""},
 {"name":"dbssl","value":"false"},
-{"name":"authuser","value":""},
-{"name":"authpassword","value":""},
 {"name":"badwordsFile","value":"badwords-spamscan.json"},
 {"name":"glineBadwordsFile","value":"badwords-gline.json"},
 {"name":"charsFile","value":"chars.txt"},
